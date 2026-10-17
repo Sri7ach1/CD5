@@ -1,0 +1,55 @@
+# Build output
+/build/
+
+# Generated package binaries
+/package/PPSA00001/eboot.bin
+
+# Temporary/native build artifacts
+*.o
+*.elf
+*.bin
+
+# Logs / cache
+*.log
+cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# External packaging dependencies
+/.deps/
+
+# Distribution artifacts
+/dist/
+
+# Generated PS5 application package
+/package/
+
+# Local signing material and credentials
+*.pem
+*.key
+.env
+.env.*
+
+# Local development dependencies
+/.deps/
+
+# Historical source backups
+*.pre_*
+*.pre-*
+*.bak
+*.backup
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Legacy files not used by the current CD5 build
+/Makefile
+/eboot.c
+/eboot.x
+
+# Legacy SELF utility with unverified provenance
+/tools/make_fself.py

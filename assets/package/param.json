@@ -1,0 +1,13 @@
+{
+  "applicationCategoryType": 0,
+  "titleId": "PPSA00001",
+  "localizedParameters": {
+    "defaultLanguage": "es-ES",
+    "es-ES": {
+      "titleName": "CD5"
+    },
+    "en-US": {
+      "titleName": "CD5"
+    }
+  }
+}
