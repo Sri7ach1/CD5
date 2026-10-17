@@ -6,9 +6,11 @@
 
 Developed by **[Sri7ach1](https://github.com/Sri7ach1)**.
 
-**Current version:** `0.9.0-beta` (development)
+**Current version:** `0.9.0-beta` (first public beta)
 
 **Repository:** https://github.com/Sri7ach1/CD5
+
+**Download:** [Latest release](https://github.com/Sri7ach1/CD5/releases/latest)
 
 ---
 
@@ -103,13 +105,11 @@ but they should not be considered officially tested.
 
 ## Requirements
 
-- A PlayStation 5 with a compatible homebrew execution environment
-- A compatible USB optical CD drive
+- A PlayStation 5 with a compatible homebrew execution environment (verified on firmware 13.60 with Relapse)
+- **Payload Manager (pldmgr)**: the CD5 package includes its own `unjail.elf` and calls the pldmgr API to auto-load it, so pldmgr must be installed and available
+- A compatible external USB CD/DVD drive
 - A physical Audio CD
-- Required homebrew payload services for device access
-- Network connectivity for online metadata, artwork and lyrics
-
-Online services are optional for basic CDDA playback.
+- Network connectivity for online metadata, artwork and lyrics (optional for basic CDDA playback)
 
 CD5 is intended for compatible homebrew-enabled PS5 environments. It is not an official Sony application.
 
@@ -117,16 +117,19 @@ CD5 is intended for compatible homebrew-enabled PS5 environments. It is not an o
 
 CD5 is distributed in the `.ffpfsc` homebrew format used by the target environment.
 
-1. Set up a compatible PS5 homebrew environment.
-2. Install or mount the CD5 `.ffpfsc` application using the supported homebrew workflow.
-3. Ensure the required local payload services are available.
-4. Connect a compatible USB CD drive.
-5. Launch CD5 from the PS5.
+1. Set up a compatible PS5 homebrew environment with Payload Manager (pldmgr) available.
+2. Download `CD5.ffpfsc` from the [Releases page](https://github.com/Sri7ach1/CD5/releases/latest).
+3. Install or mount `CD5.ffpfsc` using your usual homebrew workflow.
+4. Connect a compatible USB CD/DVD drive.
+5. Launch CD5 from the PS5. The bundled `unjail.elf` is loaded automatically through the pldmgr API.
 6. Insert an Audio CD.
 
 The application should detect the disc and begin playback automatically.
 
 A computer is not required for day-to-day operation after setup.
+
+**Integrity check (v0.9.0-beta):**
+`SHA-256: 9109bc4689d43294ff81d129a4fe5b14f5173a4918f559bc732c07b454695e82`
 
 ## Online services
 
@@ -141,6 +144,27 @@ Availability and accuracy depend on the corresponding services and their databas
 Some discs may not be identified correctly, and some tracks may not have cover artwork or synchronized lyrics.
 
 Downloaded metadata, artwork and lyrics are held in memory. CD5 does not intentionally persist these resources as a local cache.
+
+## Known limitations
+
+- Album identification and artwork may occasionally fail to load.
+- Some tracks may not have synchronized lyrics.
+- Online features require an internet connection.
+- Compatibility with other USB optical drives is not guaranteed.
+- This is beta software; unexpected behavior may occur.
+
+## Testing and feedback
+
+Only the configuration listed above has been verified. If you try CD5 with
+another drive, firmware or homebrew environment, please report the result
+in the [issue tracker](https://github.com/Sri7ach1/CD5/issues), including:
+
+- USB optical drive model
+- Console model and firmware version
+- Homebrew / jailbreak environment
+- What worked and what failed
+
+Confirmed configurations will be collected in this README as reports arrive.
 
 ## Building
 
