@@ -1,0 +1,7 @@
+Mozilla NSS certificate data, MPL-2.0.
+Source: https://github.com/mozilla-firefox/firefox/blob/f6dd0159931e536991eaaa02d839bdffb92c3f22/security/nss/lib/ckfw/builtins/certdata.txt
+Source SHA256: beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb
+Converted with curl mk-ca-bundle.pl 1.33, commit 0ada20387c31c638cfd7f6b4ae7e5cab5b318caf.
+Source and converter are included in the accompanying corresponding-source bundle.
+See MPL-2.0.txt and CURL-COPYING.txt. The bundle's original provenance header is
+preserved in the embedded data. No certificates or trust flags were modified.

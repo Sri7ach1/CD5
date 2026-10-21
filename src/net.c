@@ -1,8 +1,11 @@
 #include "net.h"
+#include "version.h"
 
 #include <curl/curl.h>
 
 #include <stdint.h>
+#include <stdatomic.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,11 +19,6 @@
 extern const unsigned char cd5_ca_bundle[];
 extern const size_t cd5_ca_bundle_len;
 
-
-#define CD5_USER_AGENT \
-    "CD5/0.1 (PS5 Audio CD Player)"
-
-
 typedef struct {
     char *data;
     size_t size;
@@ -29,7 +27,8 @@ typedef struct {
 } cd5_http_buffer_t;
 
 
-static int g_curl_ready = 0;
+static _Atomic int g_curl_ready = 0;
+#define CD5_HTTP_MAX_BYTES (8u * 1024u * 1024u)
 
 
 static size_t cd5_curl_write(
@@ -57,8 +56,7 @@ static size_t cd5_curl_write(
     if (bytes == 0)
         return 0;
 
-    if (buffer->size >
-        SIZE_MAX - bytes - 1) {
+    if (bytes > CD5_HTTP_MAX_BYTES || buffer->size > CD5_HTTP_MAX_BYTES - bytes) {
 
         buffer->failed = 1;
         return 0;
@@ -146,19 +144,16 @@ void cd5_net_fini(void)
 }
 
 
-int cd5_http_get(
+static int http_get_once(
     const char *url,
     char **out_data,
     size_t *out_size)
 {
-    if (!url ||
-        !out_data ||
-        !out_size ||
-        !g_curl_ready)
-        return -1;
-
+    if (!out_data || !out_size) return -1;
     *out_data = NULL;
     *out_size = 0;
+    if (!url || !g_curl_ready) return -1;
+    if (strncmp(url, "https://", 8)) return -4001;
 
     CURL *curl =
         curl_easy_init();
@@ -199,6 +194,10 @@ int cd5_http_get(
     } while (0)
 
 
+    CD5_CURL_SETOPT(CURLOPT_NOSIGNAL, 1L);
+    CD5_CURL_SETOPT(CURLOPT_PROTOCOLS_STR, "https");
+    CD5_CURL_SETOPT(CURLOPT_REDIR_PROTOCOLS_STR, "https");
+    CD5_CURL_SETOPT(CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)CD5_HTTP_MAX_BYTES);
     CD5_CURL_SETOPT(
         CURLOPT_URL,
         url);
@@ -320,4 +319,32 @@ int cd5_http_get(
         buffer.size;
 
     return (int)http_status;
+}
+
+/* At most one retry of transient transport/server errors. Certificate errors,
+ * malformed responses, 404 and 429 are not automatically retried. OPTIONS
+ * in the player allows an explicit later reload. No persistent cache. */
+static int retryable_http(int status)
+{
+    return status == 500 || status == 502 || status == 503 || status == 504 ||
+        status == -CURLE_COULDNT_RESOLVE_HOST || status == -CURLE_COULDNT_CONNECT ||
+        status == -CURLE_OPERATION_TIMEDOUT || status == -CURLE_SEND_ERROR ||
+        status == -CURLE_RECV_ERROR;
+}
+
+int cd5_http_get(const char *url, char **out_data, size_t *out_size)
+{
+    if (!out_data || !out_size) return -1;
+    *out_data = NULL; *out_size = 0;
+    if (!url) return -1;
+    /* Only the player thread calls MusicBrainz, including explicit reloads.
+     * Pace each request, not only retries, to respect the service rate limit. */
+    int musicbrainz = !strncmp(url, "https://musicbrainz.org/", 23);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (attempt || musicbrainz) usleep(1100000);
+        int status = http_get_once(url, out_data, out_size);
+        if (attempt || !retryable_http(status)) return status;
+        free(*out_data); *out_data = NULL; *out_size = 0;
+    }
+    return -1;
 }

@@ -2,6 +2,7 @@
 #include "net.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,9 @@ static int cd5_cover_decode(
     int height = 0;
     int channels = 0;
 
+    if (size > INT_MAX || !stbi_info_from_memory(data, (int)size, &width, &height, &channels) ||
+        width <= 0 || height <= 0 || width > 4096 || height > 4096)
+        return 0;
     unsigned char *rgba =
         stbi_load_from_memory(
             data,
@@ -82,12 +86,11 @@ static int cd5_cover_decode(
 int cd5_cover_load_fallback(
     cd5_cover_t *cover)
 {
-    return
-        cd5_cover_decode(
-            cover,
-            cd5_icon0_png,
-            cd5_icon0_png_len,
-            0);
+    if (!cover) return 0;
+    int status = cover->status;
+    int ok = cd5_cover_decode(cover, cd5_icon0_png, cd5_icon0_png_len, 0);
+    cover->status = status;
+    return ok;
 }
 
 
@@ -126,6 +129,7 @@ int cd5_cover_fetch_release(
         !body ||
         body_size == 0) {
 
+        cover->status = status == 404 ? 2 : status == 200 ? -2 : -1;
         free(body);
         return 0;
     }
@@ -137,6 +141,7 @@ int cd5_cover_fetch_release(
             body_size,
             1);
 
+    cover->status = ok ? 1 : -2;
     free(body);
 
     return ok;

@@ -7,6 +7,7 @@ typedef struct {
     int height;
     int valid;
     int network;
+    int status; /* 0 untried, 1 downloaded, 2 absent, -1 network, -2 invalid */
 } cd5_cover_t;
 
 void cd5_cover_clear(cd5_cover_t *cover);

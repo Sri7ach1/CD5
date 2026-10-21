@@ -22,6 +22,7 @@ typedef struct {
 void cd5_metadata_clear(
     cd5_metadata_t *meta);
 
+/* 1: matching metadata, 0: no matching result, -1: invalid response/error. */
 int cd5_metadata_parse_musicbrainz(
     const char *json,
     size_t json_size,

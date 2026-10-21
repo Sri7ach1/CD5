@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NATIVE="${CD5_NATIVE_SDK:-/root/ps5dev/PS5SX2/ps5/proto/native}"
+NATIVE="${CD5_NATIVE_SDK:?Set CD5_NATIVE_SDK to the PS5SX2 ps5/proto/native directory}"
 SDK_IMAGE="${CD5_SDK_IMAGE:-ps5-payload-sdk}"
 
 if [ ! -f "$NATIVE/tooling/prospero-clang18" ]; then
@@ -11,13 +11,15 @@ if [ ! -f "$NATIVE/tooling/prospero-clang18" ]; then
     exit 1
 fi
 
-if [ ! -f "$ROOT/runtime/app_crt.o" ]; then
-    echo "ERROR: falta runtime/app_crt.o"
-    echo "Se requiere el runtime nativo compatible para compilar CD5."
+if [ ! -f "$ROOT/runtime/app_crt.cpp" ]; then
+    echo "ERROR: falta runtime/app_crt.cpp"
     exit 1
 fi
 
 SRC="${1:-src/cd5.c}"
+case "$SRC" in
+    *[!a-zA-Z0-9_./-]*|/*|../*|*/../*) echo "Invalid source path: $SRC" >&2; exit 2 ;;
+esac
 
 BUILD_DIR="$ROOT/build"
 PACKAGE_DIR="$ROOT/package/PPSA00001"
@@ -32,6 +34,10 @@ fi
 mkdir -p "$BUILD_DIR"
 mkdir -p "$PACKAGE_DIR"
 
+export CD5_BUILD_IMAGE_ID
+CD5_BUILD_IMAGE_ID="$(docker image inspect "$SDK_IMAGE" --format '{{.Id}}')"
+python3 scripts/build_manifest.py begin
+
 echo "[1/4] Compilando $SRC ..."
 
 python3 scripts/embed_ui_assets.py
@@ -43,7 +49,10 @@ docker run --rm \
   -e PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk \
   -e PS5_CLANG=/usr/bin/clang-18 \
   "$SDK_IMAGE" \
-  sh -c "
+  sh -eu -c "
+    /native/tooling/prospero-clang18 -std=c++20 -O2 \
+      -ffunction-sections -fdata-sections -c runtime/app_crt.cpp -o build/app_crt.o
+
     /native/tooling/prospero-clang18 \
       -O2 \
       -Ithird_party/stb \
@@ -68,6 +77,9 @@ docker run --rm \
       -fdata-sections \
       -c src/discid.c \
       -o build/discid.o
+
+    /native/tooling/prospero-clang18 -O2 -ffunction-sections -fdata-sections \
+      -c src/toc.c -o build/toc.o
 
 
     /native/tooling/prospero-clang18 \
@@ -148,7 +160,7 @@ docker run --rm \
   -v "$NATIVE":/native \
   -w /work \
   "$SDK_IMAGE" \
-  sh -c '
+  sh -eu -c '
     /native/tooling/prospero-clang18 \
       -O2 \
       -fvisibility=hidden \
@@ -165,7 +177,7 @@ docker run --rm \
   -v "$NATIVE":/native \
   -w /work \
   "$SDK_IMAGE" \
-  sh -c '
+  sh -eu -c '
     STUBS=$(find /opt/ps5-payload-sdk/target/lib -maxdepth 1 -name "*.so" \
       ! -name "libScePosixForWebKit.so" \
       ! -name "libSceGLSlimVSH.so" | sort)
@@ -181,11 +193,13 @@ docker run --rm \
       --version-script /native/tooling/native/app-symbols.map \
       -e _start \
       --no-dynamic-linker \
+      -Map=build/link.map \
       -o build/llvm-pie.elf \
-      runtime/app_crt.o \
+      build/app_crt.o \
       build/cd5.o \
       build/net.o \
       build/discid.o \
+      build/toc.o \
       build/metadata.o \
       build/lyrics.o \
       build/cover.o \
@@ -194,9 +208,6 @@ docker run --rm \
       --as-needed $STUBS \
       --exclude-libs=ALL \
       -L /opt/ps5-payload-sdk/target/lib \
-      /opt/ps5-payload-sdk/target/lib/libc++.a \
-      /opt/ps5-payload-sdk/target/lib/libc++abi.a \
-      /opt/ps5-payload-sdk/target/lib/libunwind.a \
       --start-group \
       /opt/ps5-payload-sdk/target/lib/libcurl.a \
       /opt/ps5-payload-sdk/target/lib/libmbedtls.a \
@@ -214,7 +225,7 @@ docker run --rm \
   -v "$NATIVE":/native \
   -w /work \
   "$SDK_IMAGE" \
-  sh -c '
+  sh -eu -c '
     /native/tooling/native/ps5-native-tool link \
       --in build/llvm-pie.elf \
       --out build/eboot-native.elf \
@@ -242,6 +253,14 @@ cp -f assets/branding/icon0.png \
 
 cp -f assets/package/param.json \
   package/PPSA00001/sce_sys/param.json
+
+# Include the current notices with local packages. Open audit items remain
+# documented; including notices alone does not resolve source correspondence.
+mkdir -p package/PPSA00001/notices
+cp LICENSE THIRD_PARTY_NOTICES.md docs/dependency-audit.md package/PPSA00001/notices/
+cp third_party/licenses/* package/PPSA00001/notices/
+cp third_party/jsmn/LICENSE package/PPSA00001/notices/JSMN-LICENSE.txt
+python3 scripts/build_manifest.py finish
 
 echo
 echo "BUILD OK"

@@ -592,7 +592,7 @@ static int parse_release(
      * Si MusicBrainz no da un track-count coincidente,
      * usamos el primer medium como fallback.
      */
-    if (fallback_medium >= 0) {
+    if (expected_track_count <= 0 && fallback_medium >= 0) {
 
         return
             parse_medium(
@@ -615,7 +615,7 @@ int cd5_metadata_parse_musicbrainz(
     if (!json ||
         json_size == 0 ||
         !meta)
-        return 0;
+        return -1;
 
     cd5_metadata_clear(meta);
 
@@ -633,7 +633,7 @@ int cd5_metadata_parse_musicbrainz(
                 token_capacity);
 
         if (!tokens)
-            return 0;
+            return -1;
 
         jsmn_parser parser;
         jsmn_init(&parser);
@@ -662,7 +662,7 @@ int cd5_metadata_parse_musicbrainz(
             JSMN_OBJECT) {
 
         free(tokens);
-        return 0;
+        return -1;
     }
 
     int releases =
@@ -672,13 +672,11 @@ int cd5_metadata_parse_musicbrainz(
             0,
             "releases");
 
-    if (releases < 0 ||
-        tokens[releases].type !=
-            JSMN_ARRAY ||
-        tokens[releases].size <= 0) {
-
-        free(tokens);
-        return 0;
+    if (releases < 0 || tokens[releases].type != JSMN_ARRAY) {
+        free(tokens); return -1;
+    }
+    if (tokens[releases].size == 0) {
+        free(tokens); return 0;
     }
 
     /*

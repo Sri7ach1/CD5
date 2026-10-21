@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT/package/PPSA00001"
 DIST_DIR="$ROOT/dist"
-OUTPUT="$DIST_DIR/CD5.ffpfsc"
+OUTPUT="${CD5_PACKAGE_OUTPUT:-$DIST_DIR/CD5.ffpfsc}"
 
 cd "$ROOT"
 
@@ -24,12 +24,19 @@ if [ ! -f "$APP_DIR/sce_sys/param.json" ]; then
     exit 1
 fi
 
+python3 scripts/build_manifest.py verify
+
+if [ -e "$OUTPUT" ]; then
+    echo "ERROR: output already exists; choose a new CD5_PACKAGE_OUTPUT" >&2
+    exit 1
+fi
+
 MKPFS="$("$ROOT/tools/setup-packaging-dependencies.sh" ffpfsc)"
 
 mkdir -p "$DIST_DIR"
-rm -f "$OUTPUT"
+mkdir -p "$(dirname "$OUTPUT")"
 
-echo "[1/2] Generando CD5.ffpfsc ..."
+echo "[1/2] Generando $OUTPUT ..."
 
 "$MKPFS" pack folder \
     --no-adjust-output-file-extension \

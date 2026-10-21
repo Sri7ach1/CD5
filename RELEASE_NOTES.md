@@ -55,3 +55,43 @@ PS5SX2 by Swordpdf and contributors.
 https://github.com/Swordpdf/PS5SX2
 
 Forks, improvements and pull requests are welcome!
+
+## 0.9.1-beta — Unreleased candidate
+
+Hardware validation is pending. The technical dependency audit is completed;
+a public release must include the paired corresponding-source archive.
+
+- Replace permanent CD/AudioOut failure spin loops with STOP/manual retry or
+  notified process termination. Bound transient READ CD retries to three attempts.
+- Discover optical CAM devices through INQUIRY, prefer ready audio media, and
+  reopen devices after removal. Keep the UI visible without a reader/disc.
+- Validate basic/full TOCs, exclude data tracks, use real session lead-outs, and
+  request CD-DA-only sectors. Reject unverifiable mixed-disc layouts safely.
+- Derive MusicBrainz Disc ID from the validated TOC; fix last-track query numbering
+  and avoid using a medium with the wrong track count.
+- Publish metadata/track snapshots under a mutex; reject stale results after a
+  readiness/TOC recheck. Retain lyrics generation protection.
+- Bound HTTP retries and response/image sizes; enforce HTTPS-only transfers and
+  redirects, retain TLS verification, and centralize User-Agent/version/contact.
+- OPTIONS retries disc information; distinguish absent and invalid results.
+- Build the attributed startup runtime from supplied source with byte-identical
+  correspondence to the old external object. Expand dependency notices/inventory.
+- Make native SDK/console configuration explicit, remove the launcher's external
+  source edits, stop builds on intermediate errors, and verify a build manifest
+  before packaging. Preserve existing package outputs.
+
+No audio-buffer/thread architecture rewrite or persistent cache is included.
+Readers without a usable raw TOC may not play mixed CDs. AudioOut errors require
+relaunch. Synchronous CAM/HTTP calls can delay input until their timeouts.
+
+See [validation](docs/0.9.1-validation.md), [installation](docs/build-and-install.md)
+and [distribution review](docs/dependency-audit.md).
+
+### Completed dependency audit
+
+- Reproduced linked SDK libraries and the Mozilla CA bundle byte-for-byte from
+  the supplied sources; added a paired corresponding-source export workflow.
+- Completed SDK per-file notices; removed unused C++ runtime archive linkage.
+- Included Sri7ach1's GPL-3.0-or-later unjail helper source and separate build.
+  Corrected its target selection to require the CD5 path and reject ambiguity.
+  This helper change and alternate payload loaders still require PS5 testing.

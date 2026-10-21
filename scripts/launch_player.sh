@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PS5_IP="${PS5_IP:-192.168.0.2}"
-SHELL_PORT="2323"
+PS5_IP="${PS5_IP:?Set PS5_IP explicitly before launch}"
+SHELL_PORT="${PS5_SHELL_PORT:-2323}"
 
 APP_ID="PPSA00001"
 
-UNJAIL_DIR="${CD5_UNJAIL_DIR:-/root/ps5dev/build/unjail_pid}"
-UNJAIL_SRC="$UNJAIL_DIR/unjail_pid.c"
-UNJAIL_ELF="$UNJAIL_DIR/unjail_pid.elf"
+# Supply a separately built helper that validates the CD5 application path.
+# scripts/build_unjail.sh builds the GPL-licensed source supplied here.
+UNJAIL_ELF="${CD5_UNJAIL_ELF:?Set CD5_UNJAIL_ELF to the verified autonomous helper}"
+if [ ! -f "$UNJAIL_ELF" ]; then
+    echo "Missing helper: $UNJAIL_ELF" >&2
+    exit 1
+fi
 
 PLDMGR_URL="http://${PS5_IP}:8084"
 
@@ -39,7 +43,7 @@ echo " CDDA Player launcher"
 echo "========================================"
 
 echo
-echo "[1/7] Comprobando instancia anterior..."
+echo "[1/5] Comprobando instancia anterior..."
 
 OLD_PID="$(get_app_pid || true)"
 
@@ -59,12 +63,12 @@ if [ -n "${OLD_PID:-}" ]; then
 fi
 
 echo
-echo "[2/7] Lanzando $APP_ID ..."
+echo "[2/5] Lanzando $APP_ID ..."
 
 ps5_cmd "launch $APP_ID" || true
 
 echo
-echo "[3/7] Esperando PID nuevo..."
+echo "[3/5] Esperando PID nuevo..."
 
 PID=""
 
@@ -87,32 +91,8 @@ fi
 echo "PID detectado: $PID"
 
 echo
-echo "[4/7] Preparando unjail para PID $PID ..."
+echo "[4/5] Subiendo helper autónomo ..."
 
-cd "$UNJAIL_DIR"
-
-sed -i \
-    "s/#define TARGET_PID .*/#define TARGET_PID $PID/" \
-    "$UNJAIL_SRC"
-
-grep TARGET_PID "$UNJAIL_SRC"
-
-echo
-echo "[5/7] Compilando helper..."
-
-docker run --rm \
-    -v "$UNJAIL_DIR:/src" \
-    -w /src \
-    ps5-payload-sdk \
-    make clean all
-
-if [ ! -f "$UNJAIL_ELF" ]; then
-    echo "ERROR: no se generó $UNJAIL_ELF"
-    exit 1
-fi
-
-echo
-echo "[6/7] Subiendo helper..."
 
 curl -sS \
     -Q "MTRW" \
@@ -126,7 +106,7 @@ curl -sS \
     >/dev/null
 
 echo
-echo "[7/7] Inyectando unjail mediante Payload Manager..."
+echo "[5/5] Inyectando unjail mediante Payload Manager..."
 
 curl -sS \
     -X POST \

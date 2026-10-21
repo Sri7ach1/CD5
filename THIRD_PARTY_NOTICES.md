@@ -78,9 +78,10 @@ such as libcurl and Mbed TLS.
 
 Those components are governed by their own licenses and distribution terms.
 
-The local startup object `runtime/app_crt.o` is not included in the public
-source distribution pending verification of its origin and redistribution
-permissions.
+The startup source `runtime/app_crt.cpp` is included, copyright 2026
+BlackBearReloaded, GPL-3.0-or-later. It is copied unmodified from the pinned
+PS5SX2 revision documented in `runtime/README.md`. Rebuilding it reproduces
+the former external object byte-for-byte.
 
 The native build tools and the original PS5SX2 development tree are not
 vendored into this repository.
@@ -102,7 +103,7 @@ Before distributing binary releases, the project must verify applicable
 notices and redistribution obligations for all bundled and statically
 linked components, including native runtime libraries and certificate data.
 
-This document will be updated as the dependency audit is completed.
+The completed candidate audit and source-delivery requirements are recorded below.
 
 ## Trademarks
 
@@ -110,3 +111,25 @@ PlayStation and related marks belong to their respective owners.
 
 CD5 is not affiliated with, endorsed by, or sponsored by Sony Interactive
 Entertainment.
+
+## 0.9.1 dependency audit completed
+
+See [docs/dependency-audit.md](docs/dependency-audit.md) for source correspondence,
+reproduction evidence and release source-delivery instructions. The companion
+corresponding-source archive must accompany the matching binary release.
+
+- curl 8.18.0: `third_party/licenses/CURL-COPYING.txt`.
+- Mbed TLS 3.6.0: `MBEDTLS-LICENSE.txt`; Apache-2.0 option selected.
+- SDK libc and headers: `PS5-SDK-NOTICES.txt`, with full per-file source notices.
+  GPL-3.0-or-later portions retain John Törnblom's attribution; BSD, MIT and LLVM
+  portions retain their own terms.
+- LLVM source headers and emulated TLS: `LLVM-LICENSE.txt` and runtime license
+  texts. No libc++, libc++abi or libunwind archive objects enter CD5.
+- Mozilla NSS certificate data: `MPL-2.0.txt` and `MOZILLA-CA-NOTICE.txt`.
+  Unmodified certdata.txt and the original curl converter accompany the source.
+- `helpers/unjail_pid/unjail_pid.c`: copyright 2026 Sri7ach1,
+  GPL-3.0-or-later, licensed with the author's explicit authorization.
+
+All referenced standalone notice files are under `third_party/licenses/` and
+are copied into the generated application package. No proprietary console
+runtime libraries or external payload-manager binary are included.

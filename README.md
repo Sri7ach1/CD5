@@ -161,7 +161,7 @@ The packaged application is generated at:
 
 `dist/CD5.ffpfsc`
 
-Further setup and reproducible-build documentation will be provided as the beta release is finalized.
+See [build and installation](docs/build-and-install.md). Set `CD5_NATIVE_SDK` explicitly before building. Existing package outputs are never overwritten; use `CD5_PACKAGE_OUTPUT` for a new candidate filename.
 
 ## Native Build Dependencies
 
@@ -173,7 +173,7 @@ components that are not included in this repository:
 - Native PS5 linker script (`ps5-pie.ld`)
 - Native application symbol map (`app-symbols.map`)
 - Native SELF conversion/signing tool (`ps5-native-tool`)
-- Compatible startup runtime object (`runtime/app_crt.o`)
+- Startup source `runtime/app_crt.cpp` (included; compiled by the build script)
 - MkPFS for generating the `.ffpfsc` distribution
 
 The native toolchain location can be configured with:
@@ -182,11 +182,11 @@ The native toolchain location can be configured with:
 
 The Docker image can be selected with `CD5_SDK_IMAGE`.
 
-**Important:** The startup runtime object is not distributed with the
-source repository pending provenance and redistribution review.
-
-A fresh checkout therefore cannot currently be built without
-provisioning these external dependencies.
+The startup source is included with verified correspondence to the former
+runtime object. The SDK and native tools still need to be provisioned.
+See [build and installation](docs/build-and-install.md) for explicit
+configuration and helper requirements, and [dependency audit](docs/dependency-audit.md)
+for remaining distribution questions.
 
 ## Current Status
 
@@ -262,3 +262,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 ---
 
 **CD5 — Physical music, native playback.**
+
+## 0.9.1-beta development candidate
+
+Unreleased and pending PS5 validation. Changes include recoverable CD read
+errors, optical discovery/reconnection, session-aware audio bounds, synchronized
+metadata snapshots and bounded network retries. OPTIONS reloads disc information
+and restarts playback. AudioOut failure exits cleanly and requires relaunch.
+
+[Validation and known limits](docs/0.9.1-validation.md) ·
+[Release notes](RELEASE_NOTES.md) · [Dependency audit](docs/dependency-audit.md).

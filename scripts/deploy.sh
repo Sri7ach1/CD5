@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PS5_IP="${PS5_IP:-192.168.0.2}"
+PS5_IP="${PS5_IP:?Set PS5_IP explicitly before deployment}"
 
 LOCAL_EBOOT="$ROOT/package/PPSA00001/eboot.bin"
 REMOTE_EBOOT="/system_ex/app/PPSA00001/eboot.bin"

@@ -66,19 +66,28 @@ static void mb_base64(
 }
 
 
+static int valid_toc(const cd5_disc_toc_t *toc)
+{
+    if (!toc || toc->first_track < 1 || toc->last_track < toc->first_track ||
+        toc->last_track > 99) return 0;
+    uint32_t previous = 0;
+    for (int i = 1; i < 100; ++i) {
+        uint32_t offset = toc->frame_offset[i];
+        if (i < toc->first_track || i > toc->last_track) {
+            if (offset) return 0;
+        } else {
+            if (offset < 150 || offset <= previous || offset >= toc->frame_offset[0]) return 0;
+            previous = offset;
+        }
+    }
+    return 1;
+}
+
 int cd5_discid_generate(
     const cd5_disc_toc_t *toc,
     char out[29])
 {
-    if (!toc || !out)
-        return 0;
-
-    if (toc->first_track < 1 ||
-        toc->first_track > 99 ||
-        toc->last_track < toc->first_track ||
-        toc->last_track > 99 ||
-        toc->frame_offset[0] == 0)
-        return 0;
+    if (!out || !valid_toc(toc)) return 0;
 
     /*
      * 2 + 2 + (100 * 8) = 804 caracteres.
@@ -140,22 +149,15 @@ int cd5_discid_make_toc_query(
     char *out,
     size_t out_size)
 {
-    if (!toc ||
-        !out ||
-        out_size == 0)
-        return 0;
-
-    int track_count =
-        (int)toc->last_track -
-        (int)toc->first_track + 1;
+    if (!out || out_size == 0 || !valid_toc(toc)) return 0;
 
     int n =
         snprintf(
             out,
             out_size,
-            "%u+%d+%u",
+            "%u+%u+%u",
             (unsigned)toc->first_track,
-            track_count,
+            (unsigned)toc->last_track,
             (unsigned)toc->frame_offset[0]);
 
     if (n < 0 ||

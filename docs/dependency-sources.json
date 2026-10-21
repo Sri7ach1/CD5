@@ -1,0 +1,37 @@
+{
+  "certdata.txt": {
+    "sha256": "beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb",
+    "bytes": 1375050,
+    "origin": "https://raw.githubusercontent.com/mozilla-firefox/firefox/f6dd0159931e536991eaaa02d839bdffb92c3f22/security/nss/lib/ckfw/builtins/certdata.txt"
+  },
+  "curl-8.18.0.tar.xz": {
+    "sha256": "40df79166e74aa20149365e11ee4c798a46ad57c34e4f68fd13100e2c9a91946",
+    "bytes": 2801444,
+    "origin": "https://curl.se/download/curl-8.18.0.tar.xz"
+  },
+  "libcxx-headers.tar": {
+    "sha256": "d67c3625ec140fce18147ad1aadfad526828b91aeab52f008492a16d0a22b75f",
+    "bytes": 8232960,
+    "origin": "Installed LLVM 18.1.8 source headers and generated __config_site from audited SDK; tar -C target/include c++/v1"
+  },
+  "mbedtls-3.6.0.tar.gz": {
+    "sha256": "32c500e73ee878e193e7d66bf5e4c34fb42bb968a6c9f9488aa466b16f6f3bff",
+    "bytes": 5891466,
+    "origin": "https://codeload.github.com/Mbed-TLS/mbedtls/tar.gz/refs/tags/v3.6.0"
+  },
+  "mk-ca-bundle.pl": {
+    "sha256": "8e278f4982210b37e4f9a048bd6ed23df41e4a054085bd73f8242628f03d09ca",
+    "bytes": 24902,
+    "origin": "https://raw.githubusercontent.com/curl/curl/0ada20387c31c638cfd7f6b4ae7e5cab5b318caf/scripts/mk-ca-bundle.pl"
+  },
+  "native-tools.tar": {
+    "sha256": "af4316e78f7c3d6929e3959bc4c9e3bd7067e9e56809281c39ffcf547038ba5a",
+    "bytes": 163840,
+    "origin": "git archive b4cf55e87c34e8a2a1cd9302df4373e5a94d28f4 ps5/proto/native/tooling COPYING.GPLv3; https://github.com/Swordpdf/PS5SX2"
+  },
+  "sdk-f5d40f0.tar": {
+    "sha256": "4769407a1f2b6ed4190cdd5fcadf873966bfe275077d08d522e4f6d54e9540a2",
+    "bytes": 18206720,
+    "origin": "git archive f5d40f02770e9b0001dd9e18056eca70b3da8b40; https://github.com/ps5-payload-dev/sdk"
+  }
+}

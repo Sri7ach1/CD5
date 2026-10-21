@@ -30,6 +30,9 @@
 
 #include "net.h"
 #include "discid.h"
+#include "toc.h"
+#include "scsi_policy.h"
+#include <stdatomic.h>
 #include "metadata.h"
 #include "cover.h"
 #include "lyrics.h"
@@ -39,6 +42,7 @@
 #define STBTT_STATIC
 #include <stb_truetype.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 
 
@@ -126,6 +130,9 @@ static uint32_t be32(const uint8_t *p)
            ((uint32_t)p[3]);
 }
 
+/* CAM and this diagnostic record are owned exclusively by the player thread. */
+static cd5_io_result g_io;
+
 static int cam_command(
     int fd,
     const uint8_t *cdb,
@@ -139,6 +146,8 @@ static int cam_command(
     if (actual)
         *actual = 0;
 
+    memset(&g_io, 0, sizeof(g_io));
+    g_io.kind = CD5_IO_STOP;
     union ccb c;
     memset(&c, 0, sizeof(c));
 
@@ -157,11 +166,29 @@ static int cam_command(
 
     memcpy(c.csio.cdb_io.cdb_bytes, cdb, cdb_len);
 
-    if (ioctl(fd, CAMIOCOMMAND, &c) != 0)
+    if (ioctl(fd, CAMIOCOMMAND, &c) != 0) {
+        g_io.os_error = errno;
+        if (errno == ENXIO || errno == ENODEV || errno == EBADF)
+            g_io.kind = CD5_IO_GONE;
+        else if (errno == EINTR || errno == EAGAIN)
+            g_io.kind = CD5_IO_RETRY;
         return 0;
-
-    if ((c.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP)
+    }
+    g_io.cam_status = c.ccb_h.status & CAM_STATUS_MASK;
+    g_io.scsi_status = c.csio.scsi_status;
+    if (g_io.cam_status != CAM_REQ_CMP) {
+        if (g_io.cam_status == CAM_DEV_NOT_THERE || g_io.cam_status == CAM_SEL_TIMEOUT)
+            g_io.kind = CD5_IO_GONE;
+        else if (g_io.cam_status == CAM_BUSY || g_io.cam_status == CAM_SCSI_BUSY)
+            g_io.kind = CD5_IO_RETRY;
+        if (c.ccb_h.status & CAM_AUTOSNS_VALID) {
+            size_t n = c.csio.sense_len;
+            if (n > sizeof(c.csio.sense_data)) n = sizeof(c.csio.sense_data);
+            n = c.csio.sense_resid <= n ? n - c.csio.sense_resid : 0;
+            g_io.kind = cd5_sense_policy((const uint8_t *)&c.csio.sense_data, n, &g_io);
+        }
         return 0;
+    }
 
     uint32_t resid = c.csio.resid;
     uint32_t got = resid <= len ? len - resid : 0;
@@ -172,220 +199,96 @@ static int cam_command(
     if (len && resid && !allow_short)
         return 0;
 
+    g_io.kind = CD5_IO_OK;
     return 1;
+}
+
+static int pass_name(const char *name)
+{
+    if (strncmp(name, "pass", 4) || !name[4]) return 0;
+    for (const char *p = name + 4; *p; ++p)
+        if (*p < '0' || *p > '9') return 0;
+    return 1;
+}
+
+/* INQUIRY type 5 identifies an optical candidate, not CDDA compatibility.
+ * Prefer a ready candidate with audio tracks; actual playback requires the
+ * validated TOC and READ CD. A configured device is never silently replaced. */
+static int optical_candidate(const char *path, int *has_audio)
+{
+    int fd = open(path, O_RDWR);
+    if (fd < 0) fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    uint8_t inquiry[36] = {0}, cdb[6] = {0x12, 0, 0, 0, 36, 0};
+    uint32_t got = 0;
+    if (!cam_command(fd, cdb, 6, inquiry, sizeof(inquiry), 1000, 1, &got) ||
+        got < 36 || (inquiry[0] & 0xe0) || (inquiry[0] & 31) != 5) {
+        close(fd); return -1;
+    }
+    uint8_t tur[6] = {0};
+    *has_audio = 0;
+    if (cam_command(fd, tur, 6, NULL, 0, 1000, 0, NULL)) {
+        uint8_t toc[804] = {0}, read_toc[10] = {0x43,0,0,0,0,0,0,3,36,0};
+        if (cam_command(fd, read_toc, 10, toc, sizeof(toc), 1000, 1, &got)) {
+            uint32_t end = got >= 4 ? (uint32_t)be16(toc) + 2 : 0;
+            if (end <= got)
+                for (uint32_t i = 4; i + 8 <= end; i += 8)
+                    if (toc[i+2] >= 1 && toc[i+2] <= 99 && !(toc[i+1] & 4))
+                        *has_audio = 1;
+        }
+    }
+    return fd;
 }
 
 static int open_usb_pass(void)
 {
-    int fd = open("/dev/pass1", O_RDWR);
-
-    if (fd >= 0)
-        return fd;
-
-    fd = open("/dev/pass1", O_RDONLY);
-
-    if (fd >= 0)
-        return fd;
-
-    return -1;
+    const char *configured = getenv("CD5_DEVICE");
+    int audio = 0;
+    if (configured && *configured) {
+        if (strncmp(configured, "/dev/", 5) || !pass_name(configured + 5)) return -1;
+        return optical_candidate(configured, &audio);
+    }
+    DIR *dir = opendir("/dev");
+    if (!dir) return -1;
+    int fallback = -1, selected = -1, probes = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) && probes < 16) {
+        if (!pass_name(entry->d_name)) continue;
+        ++probes;
+        char path[300];
+        int n = snprintf(path, sizeof(path), "/dev/%s", entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        int fd = optical_candidate(path, &audio);
+        if (fd < 0) continue;
+        if (audio) { selected = fd; break; }
+        if (fallback < 0) fallback = fd;
+        else close(fd);
+    }
+    closedir(dir);
+    if (selected >= 0) { if (fallback >= 0) close(fallback); return selected; }
+    return fallback;
 }
 
-#define MAX_AUDIO_TRACKS 99
-
-typedef struct {
-    uint8_t number;
-    uint32_t start_lba;
-    uint32_t end_lba;
-} audio_track_t;
-
-static int read_musicbrainz_toc(
-    int pass_fd,
-    cd5_disc_toc_t *disc)
+/* A single validated TOC supplies both playback bounds and Disc ID. */
+static int read_disc_toc(int fd, cd5_toc_t *toc)
 {
-    if (!disc)
-        return 0;
-
-    memset(disc, 0, sizeof(*disc));
-
-    uint8_t toc_cdb[10] = {
-        0x43, 0, 0, 0, 0,
-        0, 0, 0x03, 0x24, 0
-    };
-
-    uint8_t toc[804];
-    memset(toc, 0, sizeof(toc));
-
-    uint32_t got = 0;
-
-    if (!cam_command(
-            pass_fd,
-            toc_cdb,
-            sizeof(toc_cdb),
-            toc,
-            sizeof(toc),
-            10000,
-            1,
-            &got))
-        return 0;
-
-    if (got < 12)
-        return 0;
-
-    uint32_t total =
-        (uint32_t)be16(toc) + 2;
-
-    if (total > got)
-        total = got;
-
-    /*
-     * Header READ TOC:
-     * byte 2 = first track
-     * byte 3 = last track
-     */
-    disc->first_track = toc[2];
-    disc->last_track = toc[3];
-
-    if (disc->first_track < 1 ||
-        disc->last_track < disc->first_track ||
-        disc->last_track > 99)
-        return 0;
-
-    for (uint32_t off = 4;
-         off + 8 <= total;
-         off += 8) {
-
-        uint8_t track =
-            toc[off + 2];
-
-        uint32_t lba =
-            be32(&toc[off + 4]);
-
-        /*
-         * MusicBrainz usa offsets absolutos desde el comienzo
-         * físico del CD, mientras READ TOC nos entrega LBA.
-         */
-        uint32_t frame_offset =
-            lba + 150u;
-
-        if (track == 0xAA) {
-
-            disc->frame_offset[0] =
-                frame_offset;
-
-        } else if (track >= 1 &&
-                   track <= 99) {
-
-            disc->frame_offset[track] =
-                frame_offset;
-        }
+    uint8_t basic[804] = {0}, full[4096] = {0};
+    uint32_t basic_size = 0, full_size = 0;
+    uint8_t cdb[10] = {0x43, 0, 0, 0, 0, 0, 0, 3, 36, 0};
+    if (!cam_command(fd, cdb, sizeof(cdb), basic, sizeof(basic),
+                     3000, 1, &basic_size)) return 0;
+    cdb[1] = 2; /* MSF; full TOC returns binary MSF session descriptors. */
+    cdb[2] = 2;
+    cdb[7] = sizeof(full) >> 8;
+    cdb[8] = sizeof(full) & 255;
+    if (!cam_command(fd, cdb, sizeof(cdb), full, sizeof(full),
+                     3000, 1, &full_size)) {
+        /* Only an unsupported command/format permits the basic-TOC fallback.
+         * Never accept a TOC captured before a media/transport error. */
+        if (g_io.key != SSD_KEY_ILLEGAL_REQUEST) return 0;
+        full_size = 0;
     }
-
-    if (disc->frame_offset[0] == 0)
-        return 0;
-
-    for (int track = disc->first_track;
-         track <= disc->last_track;
-         ++track) {
-
-        if (disc->frame_offset[track] == 0)
-            return 0;
-    }
-
-    return 1;
-}
-
-
-static int read_audio_tracks(
-    int pass_fd,
-    audio_track_t *tracks,
-    int max_tracks)
-{
-    uint8_t toc_cdb[10] = {
-        0x43, 0, 0, 0, 0,
-        0, 0, 0x03, 0x24, 0
-    };
-
-    uint8_t toc[804];
-    memset(toc, 0, sizeof(toc));
-
-    uint32_t got = 0;
-
-    if (!cam_command(
-            pass_fd,
-            toc_cdb,
-            sizeof(toc_cdb),
-            toc,
-            sizeof(toc),
-            10000,
-            1,
-            &got))
-        return -1;
-
-    if (got < 12)
-        return -1;
-
-    uint32_t toc_total = (uint32_t)be16(toc) + 2;
-
-    if (toc_total > got)
-        toc_total = got;
-
-    int count = 0;
-    int pending_audio = -1;
-
-    for (uint32_t off = 4;
-         off + 8 <= toc_total;
-         off += 8) {
-
-        uint8_t control = toc[off + 1] & 0x0f;
-        uint8_t track = toc[off + 2];
-        uint32_t lba = be32(&toc[off + 4]);
-
-        /*
-         * Cualquier descriptor posterior cierra la pista
-         * de audio anterior, incluido el lead-out 0xAA.
-         */
-        if (pending_audio >= 0) {
-            tracks[pending_audio].end_lba = lba;
-            pending_audio = -1;
-        }
-
-        if (track == 0xAA)
-            continue;
-
-        /*
-         * control bit 2:
-         *   0 = audio
-         *   1 = data
-         */
-        if ((control & 0x04) == 0) {
-            if (count >= max_tracks)
-                break;
-
-            tracks[count].number = track;
-            tracks[count].start_lba = lba;
-            tracks[count].end_lba = 0;
-
-            pending_audio = count;
-            ++count;
-        }
-    }
-
-    /*
-     * Todas las pistas válidas deben haber quedado cerradas
-     * por el descriptor siguiente o por el lead-out.
-     */
-    int valid = 0;
-
-    for (int i = 0; i < count; ++i) {
-        if (tracks[i].end_lba > tracks[i].start_lba) {
-            if (valid != i)
-                tracks[valid] = tracks[i];
-
-            ++valid;
-        }
-    }
-
-    return valid;
+    return cd5_toc_parse(basic, basic_size, full, full_size, toc);
 }
 
 #define READ_SECTORS 16
@@ -401,6 +304,7 @@ static int read_cdda_sectors(
     memset(read_cdb, 0, sizeof(read_cdb));
 
     read_cdb[0] = 0xBE;
+    read_cdb[1] = 0x04; /* MMC expected sector type 001b: CD-DA only. */
     read_cdb[2] = (uint8_t)(lba >> 24);
     read_cdb[3] = (uint8_t)(lba >> 16);
     read_cdb[4] = (uint8_t)(lba >> 8);
@@ -415,16 +319,12 @@ static int read_cdda_sectors(
     uint32_t bytes = sectors * CD_SECTOR_BYTES;
     uint32_t received = 0;
 
-    if (!cam_command(
-            pass_fd,
-            read_cdb,
-            sizeof(read_cdb),
-            buffer,
-            bytes,
-            20000,
-            0,
-            &received))
-        return 0;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (cam_command(pass_fd, read_cdb, sizeof(read_cdb), buffer, bytes,
+                        5000, 0, &received)) return received == bytes;
+        if (g_io.kind != CD5_IO_RETRY || attempt == 2) return 0;
+        usleep(100000);
+    }
 
     return received == bytes;
 }
@@ -485,6 +385,11 @@ static int trigger_local_unjail(void)
         return 0;
     }
 
+    struct timeval timeout = {2, 0};
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+        close(fd); return 0;
+    }
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
 
@@ -652,10 +557,10 @@ extern int sceVideoOutGetFlipStatus(
  *
  * Sólo lo lee el hilo UI.
  */
-static volatile int g_ui_track_count = 0;
-static volatile int g_ui_current_track = 0;
-static volatile uint32_t g_ui_current_lba = 0;
-static volatile uint64_t g_ui_lba_anchor_ms = 0;
+
+static _Atomic int g_ui_current_track = 0;
+static _Atomic uint32_t g_ui_current_lba = 0;
+static _Atomic uint64_t g_ui_lba_anchor_ms = 0;
 
 static uint64_t cd5_monotonic_ms(void)
 {
@@ -674,10 +579,12 @@ enum {
     UI_STATE_LOADING,
     UI_STATE_PLAYING,
     UI_STATE_PAUSED,
-    UI_STATE_STOPPED
+    UI_STATE_STOPPED,
+    UI_STATE_NO_DRIVE,
+    UI_STATE_DISC_ERROR
 };
 
-static volatile int g_ui_state = UI_STATE_NO_DISC;
+static _Atomic int g_ui_state = UI_STATE_NO_DISC;
 
 /*
  * Estado temporal de diagnóstico de red.
@@ -686,13 +593,13 @@ static volatile int g_ui_state = UI_STATE_NO_DISC;
  *  1 = online / HTTP 200
  * -1 = error
  */
-static volatile int g_ui_network_state = 0;
-static volatile int g_ui_network_http = -1;
-static volatile uint32_t g_ui_network_bytes = 0;
-static volatile uint32_t g_ui_network_url_len = 0;
+static _Atomic int g_ui_network_state = 0;
+static _Atomic int g_ui_network_http = -1;
+static _Atomic uint32_t g_ui_network_bytes = 0;
+static _Atomic uint32_t g_ui_network_url_len = 0;
 
 static cd5_metadata_t g_metadata;
-static volatile int g_metadata_state = 0;
+static int g_metadata_state = 0; /* player-thread owned */
 
 static cd5_cover_t g_cover;
 
@@ -704,8 +611,7 @@ static uint32_t g_cover_render[
 
 static int g_cover_render_valid = 0;
 
-static pthread_mutex_t g_cover_mutex =
-    PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_cover_mutex;
 
 static void cd5_cover_render_clear(void)
 {
@@ -779,8 +685,8 @@ static void cd5_cover_render_build(void)
  *  -2 = error
  */
 static cd5_lyrics_t g_lyrics;
-static volatile int g_lyrics_state = 0;
-static volatile int g_lyrics_generation = 0;
+static _Atomic int g_lyrics_state = 0;
+static _Atomic int g_lyrics_generation = 0;
 
 static pthread_mutex_t g_lyrics_mutex;
 
@@ -878,7 +784,7 @@ static void cd5_lyrics_request(
     int track_index,
     int duration_seconds)
 {
-    if (g_metadata_state <= 0 ||
+    if (g_metadata_state != 1 ||
         track_index < 0 ||
         track_index >=
             g_metadata.track_count ||
@@ -998,12 +904,39 @@ static void cd5_lyrics_request(
  * -1 = parse fallido
  */
 
-static volatile int g_ui_uid_before = -1;
-static volatile int g_ui_uid_after = -1;
-static volatile int g_ui_euid_before = -1;
-static volatile int g_ui_euid_after = -1;
+static _Atomic int g_ui_uid_before = -1;
+static _Atomic int g_ui_uid_after = -1;
+static _Atomic int g_ui_euid_before = -1;
+static _Atomic int g_ui_euid_after = -1;
 
-static audio_track_t g_ui_tracks[MAX_AUDIO_TRACKS];
+typedef struct {
+    audio_track_t tracks[MAX_AUDIO_TRACKS];
+    int count, metadata_state, cover_state;
+    cd5_metadata_t metadata;
+} cd5_ui_snapshot;
+static cd5_ui_snapshot g_snapshot;
+static pthread_mutex_t g_snapshot_mutex;
+
+static void publish_disc(const audio_track_t *tracks, int count)
+{
+    pthread_mutex_lock(&g_snapshot_mutex);
+    memset(&g_snapshot, 0, sizeof(g_snapshot));
+    if (tracks && count > 0 && count <= MAX_AUDIO_TRACKS) {
+        memcpy(g_snapshot.tracks, tracks, (size_t)count * sizeof(*tracks));
+        g_snapshot.count = count;
+        g_snapshot.metadata = g_metadata;
+        g_snapshot.metadata_state = g_metadata_state;
+        g_snapshot.cover_state = g_cover.status;
+    }
+    pthread_mutex_unlock(&g_snapshot_mutex);
+}
+
+static void snapshot_disc(cd5_ui_snapshot *snapshot)
+{
+    pthread_mutex_lock(&g_snapshot_mutex);
+    *snapshot = g_snapshot;
+    pthread_mutex_unlock(&g_snapshot_mutex);
+}
 
 
 /*
@@ -2171,6 +2104,8 @@ static float cd5_lyrics_scroll_phase(const cd5_lyrics_t *lyrics,
 static void ui_draw_frame(
     uint32_t *pixels)
 {
+    cd5_ui_snapshot snapshot;
+    snapshot_disc(&snapshot);
     const uint32_t bg =
         UINT32_C(0xff0d0a13);
 
@@ -2274,11 +2209,20 @@ static void ui_draw_frame(
         620);
 
 
+    if (snapshot.count > 0 && (snapshot.metadata_state != 1 || snapshot.cover_state != 1)) {
+        const char *info = snapshot.metadata_state == 2 ? "No metadata found. OPTIONS reloads disc info." :
+            snapshot.metadata_state == -2 ? "Invalid metadata response. OPTIONS retries." :
+            snapshot.metadata_state != 1 ? "Metadata unavailable. OPTIONS retries." :
+            snapshot.cover_state == 2 ? "No cover found. OPTIONS reloads disc info." :
+            "Cover unavailable. OPTIONS retries.";
+        ui_ttf_text(pixels, CD5_FONT_UBUNTU, 850, 1001, 14.0f, info, muted, 950);
+    }
+
     int state =
         g_ui_state;
 
     int count =
-        g_ui_track_count;
+        snapshot.count;
 
     int index =
         g_ui_current_track;
@@ -2309,9 +2253,9 @@ static void ui_draw_frame(
             CD5_FONT_UBUNTU_BOLD,
             760, 650,
             34.0f,
-            state == UI_STATE_LOADING
-                ? "Reading disc"
-                : "Insert an Audio CD",
+            state == UI_STATE_LOADING ? "Reading disc" :
+            state == UI_STATE_DISC_ERROR ? "Disc not supported" :
+            state == UI_STATE_NO_DRIVE ? "Waiting for reader / disc" : "Insert an Audio CD",
             white,
             450);
 
@@ -2320,9 +2264,9 @@ static void ui_draw_frame(
             CD5_FONT_UBUNTU,
             760, 705,
             18.0f,
-            state == UI_STATE_LOADING
-                ? "Identifying release..."
-                : "CD5 will detect it automatically.",
+            state == UI_STATE_LOADING ? "Identifying release..." :
+            state == UI_STATE_DISC_ERROR ? "X retries. Square closes CD5." :
+            "Connect a reader and Audio CD. Square closes CD5.",
             muted,
             500);
 
@@ -2336,7 +2280,7 @@ static void ui_draw_frame(
 
 
     const audio_track_t *track =
-        &g_ui_tracks[index];
+        &snapshot.tracks[index];
 
     uint32_t start =
         track->start_lba;
@@ -2400,23 +2344,23 @@ static void ui_draw_frame(
     const char *artist =
         "";
 
-    if (g_metadata_state > 0) {
+    if (snapshot.metadata_state == 1) {
 
         if (index <
-                g_metadata.track_count &&
-            g_metadata.tracks[index][0]) {
+                snapshot.metadata.track_count &&
+            snapshot.metadata.tracks[index][0]) {
 
             track_title =
-                g_metadata.tracks[index];
+                snapshot.metadata.tracks[index];
         }
 
-        if (g_metadata.album[0])
+        if (snapshot.metadata.album[0])
             album =
-                g_metadata.album;
+                snapshot.metadata.album;
 
-        if (g_metadata.artist[0])
+        if (snapshot.metadata.artist[0])
             artist =
-                g_metadata.artist;
+                snapshot.metadata.artist;
     }
 
 
@@ -3057,7 +3001,7 @@ static void ui_draw_frame(
          ++i) {
 
         const audio_track_t *t =
-            &g_ui_tracks[i];
+            &snapshot.tracks[i];
 
         uint32_t dur =
             (t->end_lba -
@@ -3083,12 +3027,12 @@ static void ui_draw_frame(
         const char *name =
             fallback;
 
-        if (g_metadata_state > 0 &&
-            i < g_metadata.track_count &&
-            g_metadata.tracks[i][0]) {
+        if (snapshot.metadata_state == 1 &&
+            i < snapshot.metadata.track_count &&
+            snapshot.metadata.tracks[i][0]) {
 
             name =
-                g_metadata.tracks[i];
+                snapshot.metadata.tracks[i];
         }
 
         ui_format_time(
@@ -3452,7 +3396,7 @@ static int disc_is_ready(int pass_fd)
 static int g_pad_handle = -1;
 static uint32_t g_pad_previous = 0;
 
-static volatile int g_stopped = 0;
+static _Atomic int g_stopped = 0;
 
 enum {
     PLAYER_ACTION_NONE = 0,
@@ -3460,7 +3404,10 @@ enum {
     PLAYER_ACTION_NEXT = 1,
     PLAYER_ACTION_STOP = 2,
     PLAYER_ACTION_PLAY = 3,
-    PLAYER_ACTION_DISC_CHANGED = 4
+    PLAYER_ACTION_DISC_CHANGED = 4,
+    PLAYER_ACTION_AUDIO_ERROR = 5,
+    PLAYER_ACTION_RELOAD = 6,
+    PLAYER_ACTION_EXIT = 7
 };
 
 static void init_pad(void)
@@ -3534,6 +3481,12 @@ static int poll_pad(
 
     g_pad_previous = buttons;
 
+    if (pressed & PAD_BUTTON_OPTIONS) return PLAYER_ACTION_RELOAD;
+    if (!track) {
+        if (pressed & PAD_BUTTON_SQUARE) return PLAYER_ACTION_EXIT;
+        return (pressed & PAD_BUTTON_CROSS) ? PLAYER_ACTION_RELOAD : PLAYER_ACTION_NONE;
+    }
+
     if (pressed & PAD_BUTTON_SQUARE) {
         g_paused = 0;
         g_stopped = 1;
@@ -3558,9 +3511,7 @@ static int poll_pad(
                 : UI_STATE_PLAYING;
     }
 
-    /*
-     * OPTIONS reservado para una acción de interfaz futura.
-     */
+    /* OPTIONS explicitly reloads disc information and retries network work. */
 
     if (pressed & PAD_BUTTON_LEFT)
         return PLAYER_ACTION_PREV;
@@ -3571,6 +3522,23 @@ static int poll_pad(
     return PLAYER_ACTION_NONE;
 }
 
+/* A failed TUR keeps the existing media-change path. A ready drive with
+ * a failed read stops until the user retries or selects another track.
+ * Do not classify sense data or conceal unreadable sectors with silence. */
+static int read_failure_action(int pass_fd)
+{
+    cd5_io_result failed = g_io;
+    if (failed.kind == CD5_IO_MEDIA || failed.kind == CD5_IO_GONE || !disc_is_ready(pass_fd))
+        return PLAYER_ACTION_DISC_CHANGED;
+
+    char message[180];
+    snprintf(message, sizeof(message),
+             "CD5: CD read failed (CAM %u, sense %02x/%02x/%02x). X retries; left/right select a track.",
+             failed.cam_status, failed.key, failed.asc, failed.ascq);
+    notify(message);
+    return PLAYER_ACTION_STOP;
+}
+
 /*
  * Envía un grain FLOAT_STEREO.
  *
@@ -3578,9 +3546,7 @@ static int poll_pad(
  * AudioOut vivo y seguimos leyendo el DualSense.
  *
  * Devuelve:
- *   0  = continuar
- *  -1  = pista anterior
- *  +1  = pista siguiente
+ *   A PLAYER_ACTION_* value, including a distinct AudioOut failure.
  */
 static int submit_audio_grain(
     int audio_handle,
@@ -3611,7 +3577,7 @@ static int submit_audio_grain(
                 silence);
 
         if (ret < 0)
-            return 99;
+            return PLAYER_ACTION_AUDIO_ERROR;
 
         action = poll_pad(
             track,
@@ -3639,7 +3605,7 @@ static int submit_audio_grain(
             out);
 
     if (ret < 0)
-        return 99;
+        return PLAYER_ACTION_AUDIO_ERROR;
 
     return PLAYER_ACTION_NONE;
 }
@@ -3654,14 +3620,13 @@ int main(int argc, char **argv)
      * PTHREAD_MUTEX_INITIALIZER tenga la misma representación
      * que en el host.
      */
-    if (pthread_mutex_init(
-            &g_lyrics_mutex,
-            NULL) != 0) {
+    if (pthread_mutex_init(&g_snapshot_mutex, NULL) != 0 ||
+        pthread_mutex_init(&g_cover_mutex, NULL) != 0 ||
+        pthread_mutex_init(&g_lyrics_mutex, NULL) != 0) {
 
-        notify("CD5: lyrics mutex init FAILED");
+        notify("CD5: player mutex init FAILED");
 
-        for (;;)
-            __asm__ volatile("pause");
+        return EXIT_FAILURE;
     }
 
     (void)sceSystemServiceHideSplashScreen();
@@ -3684,8 +3649,7 @@ int main(int argc, char **argv)
     if (audio_ret != 0) {
         notify("CDDA: AudioOutInit FAILED");
 
-        for (;;)
-            __asm__ volatile("pause");
+        return EXIT_FAILURE;
     }
 
     int audio_handle = sceAudioOutOpen(
@@ -3699,8 +3663,7 @@ int main(int argc, char **argv)
     if (audio_handle < 0) {
         notify("CDDA: AudioOutOpen FAILED");
 
-        for (;;)
-            __asm__ volatile("pause");
+        return EXIT_FAILURE;
     }
 
 
@@ -3744,21 +3707,8 @@ int main(int argc, char **argv)
 
     int pass_fd = -1;
 
-    while (pass_fd < 0) {
-        pass_fd = open_usb_pass();
-
-        if (pass_fd < 0)
-            usleep(100000);
-    }
-
-    /*
-     * Si hemos llegado aquí, /dev/pass1 ya pudo abrirse.
-     * Registramos el UID efectivo del proceso en este punto.
-     */
-    g_ui_uid_after = (int)getuid();
-    g_ui_euid_after = (int)geteuid();
-
     audio_track_t tracks[MAX_AUDIO_TRACKS];
+    cd5_toc_t loaded_toc;
 
     int track_count = 0;
     int current_track = 0;
@@ -3776,15 +3726,15 @@ int main(int argc, char **argv)
 reload_disc:
 
     /*
-     * El mismo proceso y el mismo pass_fd permanecen vivos.
-     * Esperamos silenciosamente hasta que haya un medio listo.
+     * Clear the old disc before closing and rediscovering its device.
+     * The UI remains active while waiting for a reader or medium.
      */
     g_paused = 0;
     g_stopped = 0;
 
     lyrics_requested_track = -1;
 
-    g_ui_track_count = 0;
+    publish_disc(NULL, 0);
     g_ui_current_track = 0;
     g_ui_current_lba = 0;
     g_ui_lba_anchor_ms = 0;
@@ -3798,8 +3748,19 @@ reload_disc:
 
     cd5_lyrics_cancel_and_clear();
 
-    while (!disc_is_ready(pass_fd))
-        usleep(100000);
+    if (pass_fd >= 0) close(pass_fd);
+    pass_fd = -1;
+    for (;;) {
+        pass_fd = open_usb_pass();
+        if (pass_fd >= 0 && disc_is_ready(pass_fd)) break;
+        if (pass_fd >= 0) close(pass_fd);
+        pass_fd = -1;
+        g_ui_state = UI_STATE_NO_DRIVE;
+        if (poll_pad(NULL, 0, 0) == PLAYER_ACTION_EXIT) return EXIT_SUCCESS;
+        usleep(1000000);
+    }
+    g_ui_uid_after = (int)getuid();
+    g_ui_euid_after = (int)geteuid();
 
     g_ui_state = UI_STATE_LOADING;
 
@@ -3812,11 +3773,8 @@ reload_disc:
 
     memset(tracks, 0, sizeof(tracks));
 
-    track_count =
-        read_audio_tracks(
-            pass_fd,
-            tracks,
-            MAX_AUDIO_TRACKS);
+    track_count = read_disc_toc(pass_fd, &loaded_toc) ? loaded_toc.count : 0;
+    if (track_count > 0) memcpy(tracks, loaded_toc.audio, sizeof(tracks));
 
     /*
      * Puede haber un pequeño periodo de Unit Attention justo
@@ -3824,7 +3782,16 @@ reload_disc:
      * No matamos la aplicación: volvemos a intentarlo.
      */
     if (track_count <= 0) {
-        usleep(250000);
+        g_ui_state = UI_STATE_DISC_ERROR;
+        /* A malformed/data disc is not an automatic reload loop. X or
+         * OPTIONS retries; removal returns to discovery. */
+        while (disc_is_ready(pass_fd)) {
+            int a = poll_pad(NULL, 0, 0);
+            g_ui_state = UI_STATE_DISC_ERROR;
+            if (a == PLAYER_ACTION_EXIT) { close(pass_fd); return EXIT_SUCCESS; }
+            if (a == PLAYER_ACTION_RELOAD) break;
+            usleep(250000);
+        }
         goto reload_disc;
     }
 
@@ -3836,7 +3803,7 @@ reload_disc:
      * Todo permanece en RAM. No hay cache ni archivos temporales.
      */
     {
-        cd5_disc_toc_t disc_toc;
+        cd5_disc_toc_t disc_toc = loaded_toc.disc;
         char disc_id[29];
         char toc_query[1024];
         char url[2048];
@@ -3845,10 +3812,7 @@ reload_disc:
         g_ui_network_http = -1;
         g_ui_network_bytes = 0;
 
-        if (read_musicbrainz_toc(
-                pass_fd,
-                &disc_toc) &&
-            cd5_discid_generate(
+        if (cd5_discid_generate(
                 &disc_toc,
                 disc_id) &&
             cd5_discid_make_toc_query(
@@ -3870,6 +3834,7 @@ reload_disc:
             g_ui_network_url_len =
                 (uint32_t)strlen(url);
 
+            if (!cd5_network_ready) cd5_network_ready = (cd5_net_init() == 0);
             if (!cd5_network_ready) {
 
                 g_ui_network_state = -1;
@@ -3886,6 +3851,7 @@ reload_disc:
                         &body,
                         &body_size);
 
+                g_metadata_state = status == 404 ? 2 : -1;
                 g_ui_network_http = status;
                 g_ui_network_bytes =
                     (uint32_t)body_size;
@@ -3899,11 +3865,20 @@ reload_disc:
                     body &&
                     body_size > 0) {
 
-                    if (cd5_metadata_parse_musicbrainz(
+                    int metadata_result = cd5_metadata_parse_musicbrainz(
                             body,
                             body_size,
-                            track_count,
-                            &g_metadata)) {
+                            disc_toc.last_track - disc_toc.first_track + 1,
+                            &g_metadata);
+                    if (metadata_result == 1) {
+                        /* Compact metadata to the playable track list. */
+                        for (int i = 0; i < track_count; ++i) {
+                            int source = tracks[i].number - disc_toc.first_track;
+                            if (source < g_metadata.track_count)
+                                memmove(g_metadata.tracks[i], g_metadata.tracks[source], CD5_METADATA_TEXT_MAX);
+                            else g_metadata.tracks[i][0] = '\0';
+                        }
+                        g_metadata.track_count = track_count;
 
                         g_metadata_state = 1;
 
@@ -3922,7 +3897,7 @@ reload_disc:
 
                     } else {
 
-                        g_metadata_state = -1;
+                        g_metadata_state = metadata_result == 0 ? 2 : -2;
 
                         cd5_cover_load_fallback(
                             &g_cover);
@@ -3939,6 +3914,11 @@ reload_disc:
         }
     }
 
+    cd5_toc_t current_toc;
+    if (!disc_is_ready(pass_fd) || !read_disc_toc(pass_fd, &current_toc) ||
+        memcmp(&current_toc, &loaded_toc, sizeof(current_toc)) != 0)
+        goto reload_disc;
+
     if (!g_cover.valid)
         cd5_cover_load_fallback(&g_cover);
 
@@ -3947,13 +3927,7 @@ reload_disc:
     /*
      * Publicar TOC estable para la UI.
      */
-    memcpy(
-        g_ui_tracks,
-        tracks,
-        sizeof(audio_track_t) * (size_t)track_count);
-
-    g_ui_track_count =
-        track_count;
+    publish_disc(tracks, track_count);
 
     g_ui_current_track = 0;
 
@@ -4064,17 +4038,7 @@ reload_disc:
                     sectors,
                     readbuf)) {
 
-                /*
-                 * Si TEST UNIT READY también falla, asumimos
-                 * extracción/cambio de medio y no un fallo fatal.
-                 */
-                if (!disc_is_ready(pass_fd))
-                    track_action =
-                        PLAYER_ACTION_DISC_CHANGED;
-                else {
-                    notify("CDDA: READ CD FAILED");
-                    track_action = 99;
-                }
+                track_action = read_failure_action(pass_fd);
 
                 break;
             }
@@ -4256,7 +4220,7 @@ track_finished:
          * Cambio / extracción de disco.
          * --------------------------------------------------------
          */
-        if (track_action ==
+        if (track_action == PLAYER_ACTION_RELOAD || track_action ==
             PLAYER_ACTION_DISC_CHANGED) {
 
             g_paused = 0;
@@ -4300,7 +4264,7 @@ track_finished:
                         stop_silence);
 
                 if (ret < 0) {
-                    track_action = 99;
+                    track_action = PLAYER_ACTION_AUDIO_ERROR;
                     break;
                 }
 
@@ -4310,6 +4274,10 @@ track_finished:
                         current_track,
                         track_count);
 
+                if (a == PLAYER_ACTION_RELOAD) {
+                    track_action = a;
+                    break;
+                }
                 if (a == PLAYER_ACTION_PLAY) {
                     g_stopped = 0;
                     g_paused = 0;
@@ -4380,18 +4348,17 @@ track_finished:
                 }
             }
 
-            if (track_action ==
+            if (track_action == PLAYER_ACTION_RELOAD || track_action ==
                 PLAYER_ACTION_DISC_CHANGED) {
 
                 g_stopped = 0;
                 goto reload_disc;
             }
 
-            if (track_action == 99) {
+            if (track_action == PLAYER_ACTION_AUDIO_ERROR) {
+                notify("CD5: Audio output failed. Closing player; please relaunch.");
                 close(pass_fd);
-
-                for (;;)
-                    __asm__ volatile("pause");
+                return EXIT_FAILURE;
             }
 
             /*
@@ -4434,13 +4401,12 @@ track_finished:
         }
 
         /*
-         * Error grave de AudioOut / CD.
+         * AudioOut no disponible: terminar en vez de bloquear el proceso.
          */
-        if (track_action == 99) {
+        if (track_action == PLAYER_ACTION_AUDIO_ERROR) {
+            notify("CD5: Audio output failed. Closing player; please relaunch.");
             close(pass_fd);
-
-            for (;;)
-                __asm__ volatile("pause");
+            return EXIT_FAILURE;
         }
 
         /*
