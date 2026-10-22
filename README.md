@@ -6,7 +6,9 @@
 
 Developed by **[Sri7ach1](https://github.com/Sri7ach1)**.
 
-**Current version:** `0.9.0-beta` (development)
+**Published version:** `0.9.0-beta`
+
+**Candidate on this branch:** `0.9.1-beta` (PS5 validation pending)
 
 **Repository:** https://github.com/Sri7ach1/CD5
 
@@ -71,8 +73,12 @@ CD5 uses three main areas:
 | Square | Stop |
 | D-pad Left | Previous track |
 | D-pad Right | Next track |
+| OPTIONS | Reload disc information and play from track 1 |
 
 When stopped, Left and Right select a track without starting playback. Cross starts playback from the selected track.
+
+OPTIONS also retries metadata and artwork requests. It restarts playback from
+track 1 even when paused or stopped. With no playable disc, Square closes CD5.
 
 ## Tested Hardware and Firmware
 

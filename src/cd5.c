@@ -460,11 +460,7 @@ static int trigger_local_unjail(void)
 
 static int g_paused = 0;
 
-/* ============================================================
- * UI / VIDEOOUT
- * ============================================================
- *
- * Renderer CPU inspirado en demo_renderer.cpp de PS5SX2.
+/* Renderer CPU inspirado en demo_renderer.cpp de PS5SX2.
  * 1920x1080, dos buffers, bus OVERLAY.
  */
 
@@ -599,7 +595,8 @@ static _Atomic uint32_t g_ui_network_bytes = 0;
 static _Atomic uint32_t g_ui_network_url_len = 0;
 
 static cd5_metadata_t g_metadata;
-static int g_metadata_state = 0; /* player-thread owned */
+/* Player-owned: 0 untried, 1 valid, 2 absent, -1 unavailable, -2 invalid response. */
+static int g_metadata_state = 0;
 
 static cd5_cover_t g_cover;
 
@@ -669,12 +666,7 @@ static void cd5_cover_render_build(void)
 
 
 /*
- * ============================================================
- * LYRICS
- * ============================================================
- *
- * Todo en RAM.
- * Nunca se escribe cache en disco.
+ * Letras en RAM, sin caché en disco.
  *
  * state:
  *   0 = vacío
@@ -898,11 +890,6 @@ static void cd5_lyrics_request(
 
     pthread_detach(thread);
 }
-/*
- *  0 = sin intentar
- *  1 = metadata válida
- * -1 = parse fallido
- */
 
 static _Atomic int g_ui_uid_before = -1;
 static _Atomic int g_ui_uid_after = -1;
@@ -1443,12 +1430,7 @@ static void ui_format_time(
 
 
 
-/*
- * ============================================================
- * CD5 UI MODERNA
- * Ubuntu para interfaz; Bebas Neue exclusivamente branding.
- * ============================================================
- */
+/* Ubuntu para interfaz; Bebas Neue exclusivamente para la marca. */
 
 extern const unsigned char cd5_font_ubuntu_regular[];
 extern const size_t cd5_font_ubuntu_regular_len;
@@ -2131,7 +2113,7 @@ static void ui_draw_frame(
         UINT32_C(0xffa69cad);
 
     const uint32_t dim =
-        UINT32_C(0xff62596b);
+        UINT32_C(0xff9a8fa3);
 
     const uint32_t lyric_past =
         UINT32_C(0xff82758d);
@@ -2154,11 +2136,7 @@ static void ui_draw_frame(
         bg);
 
 
-    /*
-     * ============================================================
-     * HEADER
-     * ============================================================
-     */
+    /* Cabecera. */
     ui_ttf_text(
         pixels,
         CD5_FONT_BEBAS,
@@ -2210,11 +2188,11 @@ static void ui_draw_frame(
 
 
     if (snapshot.count > 0 && (snapshot.metadata_state != 1 || snapshot.cover_state != 1)) {
-        const char *info = snapshot.metadata_state == 2 ? "No metadata found. OPTIONS reloads disc info." :
-            snapshot.metadata_state == -2 ? "Invalid metadata response. OPTIONS retries." :
-            snapshot.metadata_state != 1 ? "Metadata unavailable. OPTIONS retries." :
-            snapshot.cover_state == 2 ? "No cover found. OPTIONS reloads disc info." :
-            "Cover unavailable. OPTIONS retries.";
+        const char *info = snapshot.metadata_state == 2 ? "No metadata found." :
+            snapshot.metadata_state == -2 ? "Invalid metadata response." :
+            snapshot.metadata_state != 1 ? "Metadata unavailable." :
+            snapshot.cover_state == 2 ? "No cover found." :
+            "Cover unavailable.";
         ui_ttf_text(pixels, CD5_FONT_UBUNTU, 850, 1001, 14.0f, info, muted, 950);
     }
 
@@ -2228,11 +2206,7 @@ static void ui_draw_frame(
         g_ui_current_track;
 
 
-    /*
-     * ============================================================
-     * NO DISC
-     * ============================================================
-     */
+    /* Estado sin disco reproducible. */
     if (state == UI_STATE_NO_DISC ||
         count <= 0) {
 
@@ -2364,11 +2338,7 @@ static void ui_draw_frame(
     }
 
 
-    /*
-     * ============================================================
-     * LEFT COLUMN — COVER + PLAYER
-     * ============================================================
-     */
+    /* Columna izquierda: portada y reproductor. */
 
     const unsigned left_x =
         64;
@@ -2649,12 +2619,18 @@ static void ui_draw_frame(
         dim,
         250);
 
+    ui_ttf_text(
+        pixels,
+        CD5_FONT_UBUNTU,
+        left_x,
+        908,
+        13.0f,
+        "OPTIONS  Reload disc; play from track 1",
+        dim,
+        390);
 
-    /*
-     * ============================================================
-     * CENTER — LYRICS
-     * ============================================================
-     */
+
+    /* Columna central: letras. */
 
     const int lyrics_x =
         490;
@@ -2923,11 +2899,7 @@ static void ui_draw_frame(
         }
     }
 
-    /*
-     * ============================================================
-     * RIGHT — PLAYLIST
-     * ============================================================
-     */
+    /* Columna derecha: pistas. */
 
     const unsigned list_x =
         1335;
@@ -3632,17 +3604,8 @@ int main(int argc, char **argv)
     (void)sceSystemServiceHideSplashScreen();
 
 
-    /*
-     * ------------------------------------------------------------
-     * AUDIO OUT
-     * ------------------------------------------------------------
-     *
-     * param = 4:
-     * FLOAT_STEREO.
-     *
-     * El CD entrega S16LE 44100 Hz.
-     * Nosotros convertimos a float y remuestreamos a 48000 Hz.
-     */
+    /* AudioOut param 4: FLOAT_STEREO a 48000 Hz.
+     * El CD entrega S16LE a 44100 Hz; convertimos y remuestreamos. */
 
     int audio_ret = sceAudioOutInit();
 
@@ -3667,22 +3630,9 @@ int main(int argc, char **argv)
     }
 
 
-    /*
-     * ------------------------------------------------------------
-     * DUALSENSE
-     * ------------------------------------------------------------
-     */
-
     init_pad();
 
-    /*
-     * ------------------------------------------------------------
-     * AUTO-UNJAIL
-     * ------------------------------------------------------------
-     *
-     * Payload Manager ya está residente en la consola.
-     * Pedimos por loopback que ejecute el helper autónomo.
-     */
+    /* Pedimos al Payload Manager residente que ejecute el helper por loopback. */
 
     g_ui_uid_before = (int)getuid();
     g_ui_euid_before = (int)geteuid();
@@ -3699,11 +3649,7 @@ int main(int argc, char **argv)
     if (!trigger_local_unjail())
         notify("CDDA: automatic unjail request failed");
 
-    /*
-     * ------------------------------------------------------------
-     * LECTOR / CAMBIO DE DISCO EN CALIENTE
-     * ------------------------------------------------------------
-     */
+    /* Descubrimiento del lector y cambios de disco. */
 
     int pass_fd = -1;
 
@@ -3795,13 +3741,7 @@ reload_disc:
         goto reload_disc;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * MUSICBRAINZ DISC IDENTIFICATION
-     * ------------------------------------------------------------
-     *
-     * Todo permanece en RAM. No hay cache ni archivos temporales.
-     */
+    /* Identificación MusicBrainz en RAM, sin caché ni archivos temporales. */
     {
         cd5_disc_toc_t disc_toc = loaded_toc.disc;
         char disc_id[29];
@@ -3937,11 +3877,7 @@ reload_disc:
     current_track = 0;
     g_ui_state = UI_STATE_PLAYING;
 
-    /*
-     * ------------------------------------------------------------
-     * REPRODUCTOR
-     * ------------------------------------------------------------
-     */
+    /* Reproducción. */
 
     static uint8_t readbuf[READ_BYTES];
 
@@ -3994,18 +3930,8 @@ reload_disc:
 
         uint32_t out_frames = 0;
 
-        /*
-         * --------------------------------------------------------
-         * Resampler racional:
-         *
-         * 44100 / 48000 = 147 / 160
-         *
-         * next_out_num representa la posición del siguiente
-         * sample de salida en unidades de 1/160 de frame CD.
-         *
-         * De esta forma no acumulamos error flotante de reloj.
-         * --------------------------------------------------------
-         */
+        /* 44100/48000 = 147/160: next_out_num usa unidades de 1/160 de frame CD.
+         * La posición entera evita acumular error flotante de reloj. */
 
         int have_previous = 0;
 
@@ -4215,11 +4141,7 @@ reload_disc:
 
 track_finished:
 
-        /*
-         * --------------------------------------------------------
-         * Cambio / extracción de disco.
-         * --------------------------------------------------------
-         */
+        /* Cambio o extracción de disco. */
         if (track_action == PLAYER_ACTION_RELOAD || track_action ==
             PLAYER_ACTION_DISC_CHANGED) {
 
@@ -4230,16 +4152,8 @@ track_finished:
             goto reload_disc;
         }
 
-        /*
-         * --------------------------------------------------------
-         * STOP
-         *
-         * Mantener AudioOut vivo con silencio.
-         * X vuelve a reproducir desde el comienzo de la pista.
-         * Izquierda/derecha cambian la pista seleccionada sin
-         * abandonar el estado STOP.
-         * --------------------------------------------------------
-         */
+        /* STOP mantiene AudioOut con silencio; X reproduce desde el inicio.
+         * Izquierda/derecha seleccionan otra pista sin reanudar. */
         if (track_action ==
             PLAYER_ACTION_STOP) {
 
